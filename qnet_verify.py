@@ -25,7 +25,8 @@ def dl_all():
   for k,(path,name,seq) in enumerate(ms):
    url='https://www.q-net.or.kr/cst003.do?id=cst00302s01&gSite=L&gId=52&fileCode=R001&filePath='+urllib.parse.quote(path,safe='/')+'&fileName='+urllib.parse.quote_plus(name)+'&fileSeq='+seq+'&artlSeq='+art+'&href=0'
    r=requests.get(url,timeout=90); r.raise_for_status()
-   fn=BASE/f'{y}_{k}_'+re.sub(r'[\\/:*?"<>|]','_',name)
+   safe=re.sub(r'[\\/:*?"<>|]','_',name)
+   fn=BASE/f'{y}_{k}_{safe}'
    fn.write_bytes(r.content); out[y].append(fn)
  return out
 
@@ -34,8 +35,7 @@ def pdf_text(p):
 
 def hwp_text(p):
  out=p.with_suffix('.txt')
- cmd=['hwp5txt','--output',str(out),str(p)]
- subprocess.run(cmd,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+ subprocess.run(['hwp5txt','--output',str(out),str(p)],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
  return out.read_text('utf-8',errors='ignore')
 
 def collect_year(y,files):
@@ -45,10 +45,8 @@ def collect_year(y,files):
   if low.endswith('.zip'):
    zdir=BASE/f'z{y}'; zdir.mkdir(exist_ok=True)
    with zipfile.ZipFile(f) as z: z.extractall(zdir)
-   subs=list(zdir.rglob('*'))
-   # A형 only where discernible; otherwise all files is okay for presence verification
-   cand=[p for p in subs if p.is_file() and (p.suffix.lower() in ('.pdf','.hwp'))]
-   a=[p for p in cand if ('a형' in p.name.lower() or 'a.' in p.name.lower() or ' a' in p.name.lower())]
+   cand=[p for p in zdir.rglob('*') if p.is_file() and p.suffix.lower() in ('.pdf','.hwp')]
+   a=[p for p in cand if ('a형' in p.name.lower() or ' a' in p.name.lower())]
    if a: cand=a
    for p in cand:
     try: texts.append(pdf_text(p) if p.suffix.lower()=='.pdf' else hwp_text(p))
@@ -58,14 +56,11 @@ def collect_year(y,files):
  return '\n'.join(texts)
 
 def norm(s):
- s=unicodedata.normalize('NFKC',str(s))
- # Ignore spacing and layout glyphs only; retain Korean/Latin/digits and core punctuation enough to detect wording changes.
- s=s.replace('ㆍ','·').replace('․','·')
+ s=unicodedata.normalize('NFKC',str(s)).replace('ㆍ','·').replace('․','·')
  s=re.sub(r'\s+','',s)
  s=re.sub(r'[\u00ad\ufeff\u200b]','',s)
  return s
 
-# baseline corpus
 exams=requests.get('https://raw.githubusercontent.com/effect082/examone/main/data/exam_data.json',timeout=60).json()
 byid={e.get('id'):e for e in exams}
 files=dl_all()
@@ -74,24 +69,20 @@ for y,t in official.items(): (BASE/f'official_{y}.txt').write_text(t,'utf-8')
 
 rows=[]
 for y in range(2019,2027):
+ no=norm(official[y])
  for sess in (1,2,3):
   e=byid[f's{y}-{sess}']
   for q in e.get('questions',[]):
    qn=int(q.get('qnum') or 0); qt=str(q.get('question') or '').strip(); ops=q.get('options') or []
-   # skip known scan contamination only for status; these are handled separately in final corpus.
    if not qt: status='BROKEN_EMPTY'
    elif len(ops)!=5: status='BROKEN_OPTIONS'
-   else:
-    nq=norm(qt)
-    no=norm(official[y])
-    status='MATCH' if nq and nq in no else 'MISMATCH'
+   else: status='MATCH' if norm(qt) in no else 'MISMATCH'
    rows.append({'year':y,'session':sess,'qnum':qn,'status':status,'question':qt,'options_count':len(ops)})
 
 from collections import Counter
 c=Counter(r['status'] for r in rows)
-(Path('qnet_verify_summary.txt')).write_text('\n'.join([f'{k}: {v}' for k,v in sorted(c.items())]+[f'TOTAL: {len(rows)}']),'utf-8')
-(Path('qnet_verify_report.json')).write_text(json.dumps(rows,ensure_ascii=False,indent=2),'utf-8')
+Path('qnet_verify_summary.txt').write_text('\n'.join([f'{k}: {v}' for k,v in sorted(c.items())]+[f'TOTAL: {len(rows)}']),'utf-8')
+Path('qnet_verify_report.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2),'utf-8')
 print(Path('qnet_verify_summary.txt').read_text())
-# list mismatches compactly
 for r in rows:
  if r['status']!='MATCH': print(r['year'],r['session'],r['qnum'],r['status'],r['question'][:120])
