@@ -1,4 +1,4 @@
-import os,re,zipfile,subprocess,json,unicodedata,urllib.parse,requests
+import os,re,zipfile,json,unicodedata,urllib.parse,requests,olefile
 from pathlib import Path
 from pypdf import PdfReader
 
@@ -34,11 +34,12 @@ def pdf_text(p):
  return '\n'.join((pg.extract_text() or '') for pg in PdfReader(str(p)).pages)
 
 def hwp_text(p):
- # Q-Net HWP files can be distributable documents. PrvText is the official preview text stream.
- raw=subprocess.check_output(['hwp5proc','cat',str(p),'PrvText'],stderr=subprocess.STDOUT)
- try:
-  return raw.decode('utf-16le')
- except UnicodeDecodeError:
+ # Read the official HWP preview stream directly; avoids altering or converting the source file.
+ with olefile.OleFileIO(str(p)) as ole:
+  names=['/'.join(x) for x in ole.listdir()]
+  target=next((n for n in names if n.lower()=='prvtext'),None)
+  if not target: raise RuntimeError(f'PrvText not found: {p}; streams={names[:30]}')
+  raw=ole.openstream(target).read()
   return raw.decode('utf-16le','ignore')
 
 def session_from_name(name, fallback):
@@ -53,7 +54,6 @@ def collect_sessions(y,files):
    zdir=BASE/f'z{y}'; zdir.mkdir(exist_ok=True)
    with zipfile.ZipFile(f) as z: z.extractall(zdir)
    cand=[p for p in zdir.rglob('*') if p.is_file() and p.suffix.lower() in ('.pdf','.hwp')]
-   # Prefer A형 only. If encoding of archived names hides 'A형', include all; wording is the same across forms except order.
    a=[p for p in cand if re.search(r'(?:^|\s|_)A(?:형|\s|\.|$)',p.name,re.I)]
    if a: cand=a
    for p in cand:
