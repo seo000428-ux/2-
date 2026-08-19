@@ -1,0 +1,24 @@
+name: QNet full verify
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install requests pypdf pyhwp
+      - run: python qnet_verify.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: qnet-full-verify
+          path: |
+            qnet_verify_summary.txt
+            qnet_verify_report.json
+            qnet_verify/
+          if-no-files-found: warn
+          retention-days: 1

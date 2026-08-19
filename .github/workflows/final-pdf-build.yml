@@ -1,0 +1,25 @@
+name: Final repaired PDF build
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y fonts-nanum
+          pip install reportlab requests pypdf
+      - run: python run_fixed.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: social-worker-final-pdfs
+          path: |
+            사회복지사1급_기출문제집_2019-2026_1600문항.pdf
+            사회복지사1급_기출문제집_2019-2026_답지.pdf
+            검증결과.txt
+          retention-days: 1
