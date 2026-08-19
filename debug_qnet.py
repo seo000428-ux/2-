@@ -1,15 +1,16 @@
-import requests
-URL='https://raw.githubusercontent.com/effect082/examone/main/data/exam_data.json'
-exams=requests.get(URL,timeout=60).json()
-byid={e.get('id'):e for e in exams}
-for y in range(2019,2027):
-  for s in (1,2,3):
-    e=byid[f's{y}-{s}']
-    bad=[]
-    for q in e.get('questions',[]):
-      opts=q.get('options') or []
-      text=(q.get('question') or '').strip()
-      if len(opts)!=5 or not text:
-        bad.append((q.get('qnum'),len(opts),repr(text[:160]),[repr(str(x)[:120]) for x in opts]))
-    print(f's{y}-{s} raw={len(e.get("questions",[]))} bad={len(bad)}')
-    for x in bad: print('BAD',x)
+import requests,re,io,urllib.parse
+from pypdf import PdfReader
+page='https://www.q-net.or.kr/cst003.do?artlSeq=5224724&boardId=Q004&gId=52&gSite=L&id=cst00302&menuType=cst00309'
+s=requests.Session(); t=s.get(page,timeout=30).text
+pat=r"fileDown\('([^']+)',\s*'([^']+)',\s*'([^']+)'\)"
+ms=re.findall(pat,t)
+print('FILES',ms)
+for path,name,seq in ms:
+ if '1교시' not in name: continue
+ u='https://www.q-net.or.kr/cst003.do?id=cst00302s01&gSite=L&gId=52&fileCode=R001&filePath='+urllib.parse.quote(path,safe='/')+'&fileName='+urllib.parse.quote_plus(name)+'&fileSeq='+seq+'&artlSeq=5224724&href=0'
+ r=s.get(u,timeout=60); print('DL',r.status_code,len(r.content),r.headers.get('content-type'))
+ rd=PdfReader(io.BytesIO(r.content))
+ for i,p in enumerate(rd.pages):
+  txt=p.extract_text() or ''
+  if '33.' in txt or '취약청소년' in txt:
+   print('PAGE',i+1); print(txt)
