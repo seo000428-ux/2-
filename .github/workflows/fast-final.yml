@@ -1,0 +1,26 @@
+name: Fast final PDF build
+on:
+  pull_request:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install reportlab requests pypdf
+      - run: |
+          sudo mkdir -p /usr/share/fonts/truetype/nanum
+          curl -L --fail --retry 2 -o /usr/share/fonts/truetype/nanum/NanumGothic.ttf 'https://raw.githubusercontent.com/google/fonts/main/ofl/nanumgothic/NanumGothic-Regular.ttf'
+          curl -L --fail --retry 2 -o /usr/share/fonts/truetype/nanum/NanumGothicBold.ttf 'https://raw.githubusercontent.com/google/fonts/main/ofl/nanumgothic/NanumGothic-Bold.ttf'
+      - run: python run_fixed.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: social-worker-fast-final
+          path: |
+            사회복지사1급_기출문제집_2019-2026_1600문항.pdf
+            사회복지사1급_기출문제집_2019-2026_답지.pdf
+            검증결과.txt
+          retention-days: 1
