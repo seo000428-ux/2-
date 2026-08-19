@@ -34,9 +34,11 @@ def pdf_text(p):
  return '\n'.join((pg.extract_text() or '') for pg in PdfReader(str(p)).pages)
 
 def hwp_text(p):
- out=p.with_suffix('.txt')
- subprocess.run(['hwp5txt','--output',str(out),str(p)],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
- return out.read_text('utf-8',errors='ignore')
+ outdir=BASE/'lo'; outdir.mkdir(exist_ok=True)
+ subprocess.run(['libreoffice','--headless','--convert-to','pdf','--outdir',str(outdir),str(p)],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+ pdf=outdir/(p.stem+'.pdf')
+ if not pdf.exists(): raise RuntimeError(f'LibreOffice conversion failed: {p}')
+ return pdf_text(pdf)
 
 def collect_year(y,files):
  texts=[]
