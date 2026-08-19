@@ -1,4 +1,4 @@
-import os,re,zipfile,json,unicodedata,urllib.parse,requests,olefile
+import os,re,zipfile,json,unicodedata,urllib.parse,requests,olefile,subprocess,zlib
 from pathlib import Path
 from pypdf import PdfReader
 
@@ -33,14 +33,53 @@ def dl_all():
 def pdf_text(p):
  return '\n'.join((pg.extract_text() or '') for pg in PdfReader(str(p)).pages)
 
+def para_text_from_records(data):
+ out=[]; pos=0
+ while pos+4<=len(data):
+  h=int.from_bytes(data[pos:pos+4],'little'); pos+=4
+  tag=h & 0x3ff; size=(h>>20)&0xfff
+  if size==0xfff:
+   if pos+4>len(data): break
+   size=int.from_bytes(data[pos:pos+4],'little'); pos+=4
+  if pos+size>len(data): break
+  payload=data[pos:pos+size]; pos+=size
+  # HWPTAG_PARA_TEXT = 67. Text controls are UTF-16 control codes; strip them and their binary-looking residue.
+  if tag==67:
+   s=payload.decode('utf-16le','ignore')
+   s=''.join(ch if (ord(ch)>=32 or ch in '\n\t') else ' ' for ch in s)
+   out.append(s)
+ return '\n'.join(out)
+
 def hwp_text(p):
- # Read the official HWP preview stream directly; avoids altering or converting the source file.
  with olefile.OleFileIO(str(p)) as ole:
   names=['/'.join(x) for x in ole.listdir()]
+  # Distributable HWP stores protected body in ViewText/SectionN.
+  view=sorted([n for n in names if n.lower().startswith('viewtext/section')])
+  if view:
+   chunks=[]
+   for n in view:
+    enc=ole.openstream(n).read()
+    dec=subprocess.check_output(['hwp5proc','diststream'],input=enc,stderr=subprocess.DEVNULL)
+    try: raw=zlib.decompress(dec,-15)
+    except zlib.error: raw=dec
+    chunks.append(para_text_from_records(raw))
+   text='\n'.join(chunks)
+   if text.strip(): return text
+  # Normal HWP body fallback: raw deflate-compressed BodyText streams.
+  body=sorted([n for n in names if n.lower().startswith('bodytext/section')])
+  if body:
+   chunks=[]
+   for n in body:
+    dat=ole.openstream(n).read()
+    try: dat=zlib.decompress(dat,-15)
+    except zlib.error: pass
+    chunks.append(para_text_from_records(dat))
+   text='\n'.join(chunks)
+   if text.strip(): return text
+  # Last resort preview stream, which can be truncated.
   target=next((n for n in names if n.lower()=='prvtext'),None)
-  if not target: raise RuntimeError(f'PrvText not found: {p}; streams={names[:30]}')
-  raw=ole.openstream(target).read()
-  return raw.decode('utf-16le','ignore')
+  if target: return ole.openstream(target).read().decode('utf-16le','ignore')
+  raise RuntimeError(f'No readable text stream: {p}')
 
 def session_from_name(name, fallback):
  m=re.search(r'([123])\s*교시',name)
