@@ -1,4 +1,4 @@
-import os,re,io,zipfile,subprocess,json,unicodedata,urllib.parse,requests,sys
+import os,re,zipfile,subprocess,json,unicodedata,urllib.parse,requests
 from pathlib import Path
 from pypdf import PdfReader
 
@@ -13,13 +13,13 @@ PAGES={
 2025:('5224724','https://www.q-net.or.kr/cst003.do?artlSeq=5224724&boardId=Q004&gId=52&gSite=L&id=cst00302&menuType=cst00309'),
 2026:('5251924','https://www.q-net.or.kr/cst003.do?artlSeq=5251924&boardId=Q004&gId=52&gSite=L&id=cst00302&menuType=cst00309'),
 }
-pat=re.compile(r"fileDown\('([^']+)',\s*'([^']+)',\s*'([^']+)'\)")
+PAT=re.compile(r"fileDown\('([^']+)',\s*'([^']+)',\s*'([^']+)'\)")
 
 def dl_all():
  out={}
  for y,(art,u) in PAGES.items():
   html=requests.get(u,timeout=60).text
-  ms=pat.findall(html)
+  ms=PAT.findall(html)
   if not ms: raise RuntimeError(f'no attachments {y}')
   out[y]=[]
   for k,(path,name,seq) in enumerate(ms):
@@ -34,28 +34,36 @@ def pdf_text(p):
  return '\n'.join((pg.extract_text() or '') for pg in PdfReader(str(p)).pages)
 
 def hwp_text(p):
- outdir=BASE/'lo'; outdir.mkdir(exist_ok=True)
- subprocess.run(['libreoffice','--headless','--convert-to','pdf','--outdir',str(outdir),str(p)],check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
- pdf=outdir/(p.stem+'.pdf')
- if not pdf.exists(): raise RuntimeError(f'LibreOffice conversion failed: {p}')
- return pdf_text(pdf)
+ # Q-Net HWP files can be distributable documents. PrvText is the official preview text stream.
+ raw=subprocess.check_output(['hwp5proc','cat',str(p),'PrvText'],stderr=subprocess.STDOUT)
+ try:
+  return raw.decode('utf-16le')
+ except UnicodeDecodeError:
+  return raw.decode('utf-16le','ignore')
 
-def collect_year(y,files):
- texts=[]
- for f in files:
+def session_from_name(name, fallback):
+ m=re.search(r'([123])\s*교시',name)
+ return int(m.group(1)) if m else fallback
+
+def collect_sessions(y,files):
+ result={1:[],2:[],3:[]}
+ for idx,f in enumerate(files):
   low=f.name.lower()
   if low.endswith('.zip'):
    zdir=BASE/f'z{y}'; zdir.mkdir(exist_ok=True)
    with zipfile.ZipFile(f) as z: z.extractall(zdir)
    cand=[p for p in zdir.rglob('*') if p.is_file() and p.suffix.lower() in ('.pdf','.hwp')]
-   a=[p for p in cand if ('a형' in p.name.lower() or ' a' in p.name.lower())]
+   # Prefer A형 only. If encoding of archived names hides 'A형', include all; wording is the same across forms except order.
+   a=[p for p in cand if re.search(r'(?:^|\s|_)A(?:형|\s|\.|$)',p.name,re.I)]
    if a: cand=a
    for p in cand:
-    try: texts.append(pdf_text(p) if p.suffix.lower()=='.pdf' else hwp_text(p))
-    except Exception as e: print('EXTRACT_FAIL',p,e)
-  elif low.endswith('.pdf'): texts.append(pdf_text(f))
-  elif low.endswith('.hwp'): texts.append(hwp_text(f))
- return '\n'.join(texts)
+    sess=session_from_name(p.name,1)
+    try: result[sess].append(pdf_text(p) if p.suffix.lower()=='.pdf' else hwp_text(p))
+    except Exception as e: print('EXTRACT_FAIL',y,p,e)
+  elif low.endswith(('.pdf','.hwp')):
+   sess=session_from_name(f.name,idx+1 if idx<3 else 1)
+   result[sess].append(pdf_text(f) if low.endswith('.pdf') else hwp_text(f))
+ return {s:'\n'.join(v) for s,v in result.items()}
 
 def norm(s):
  s=unicodedata.normalize('NFKC',str(s)).replace('ㆍ','·').replace('․','·')
@@ -66,20 +74,29 @@ def norm(s):
 exams=requests.get('https://raw.githubusercontent.com/effect082/examone/main/data/exam_data.json',timeout=60).json()
 byid={e.get('id'):e for e in exams}
 files=dl_all()
-official={y:collect_year(y,files[y]) for y in PAGES}
-for y,t in official.items(): (BASE/f'official_{y}.txt').write_text(t,'utf-8')
+official={}
+for y in PAGES:
+ ss=collect_sessions(y,files[y])
+ for sess,text in ss.items():
+  official[(y,sess)]=text
+  (BASE/f'official_{y}_S{sess}.txt').write_text(text,'utf-8')
 
 rows=[]
 for y in range(2019,2027):
- no=norm(official[y])
  for sess in (1,2,3):
+  no=norm(official[(y,sess)])
   e=byid[f's{y}-{sess}']
   for q in e.get('questions',[]):
-   qn=int(q.get('qnum') or 0); qt=str(q.get('question') or '').strip(); ops=q.get('options') or []
-   if not qt: status='BROKEN_EMPTY'
-   elif len(ops)!=5: status='BROKEN_OPTIONS'
-   else: status='MATCH' if norm(qt) in no else 'MISMATCH'
-   rows.append({'year':y,'session':sess,'qnum':qn,'status':status,'question':qt,'options_count':len(ops)})
+   qn=int(q.get('qnum') or 0); qt=str(q.get('question') or '').strip(); ops=[str(x or '').strip() for x in (q.get('options') or [])]
+   if not qt: status='BROKEN_EMPTY'; missing=['stem']
+   elif len(ops)!=5: status='BROKEN_OPTIONS'; missing=[f'options={len(ops)}']
+   else:
+    missing=[]
+    if norm(qt) not in no: missing.append('stem')
+    for i,op in enumerate(ops,1):
+     if norm(op) not in no: missing.append(f'option{i}')
+    status='MATCH' if not missing else 'MISMATCH'
+   rows.append({'year':y,'session':sess,'qnum':qn,'status':status,'missing':missing,'question':qt,'options':ops})
 
 from collections import Counter
 c=Counter(r['status'] for r in rows)
@@ -87,4 +104,4 @@ Path('qnet_verify_summary.txt').write_text('\n'.join([f'{k}: {v}' for k,v in sor
 Path('qnet_verify_report.json').write_text(json.dumps(rows,ensure_ascii=False,indent=2),'utf-8')
 print(Path('qnet_verify_summary.txt').read_text())
 for r in rows:
- if r['status']!='MATCH': print(r['year'],r['session'],r['qnum'],r['status'],r['question'][:120])
+ if r['status']!='MATCH': print(r['year'],r['session'],r['qnum'],r['status'],','.join(r['missing']),r['question'][:100])
